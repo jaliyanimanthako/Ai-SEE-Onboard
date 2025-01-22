@@ -1,0 +1,106 @@
+import cv2
+import mediapipe as mp
+import numpy as np
+import os
+from extend_line import extend_line  # Ensure this function is correctly implemented
+from mediapipe.tasks import python
+from mediapipe.tasks.python import vision
+from vizualize import visualize  # Ensure this function is correctly implemented
+
+# Model path
+model_path = r'C:/Users/Jaliya Nimantha/OneDrive/Desktop/Jaliya/AH LAB/Media Pipe/efficientdet.tflite'
+
+# Ensure the path is valid
+if not os.path.exists(model_path):
+    raise FileNotFoundError(f"Model file not found at: {model_path}")
+else:
+    print(f"Model file found at: {model_path}")
+
+# MediaPipe Hand Tracking setup
+mp_hands = mp.solutions.hands
+mp_drawing = mp.solutions.drawing_utils
+hands = mp_hands.Hands(min_detection_confidence=0.8)
+
+# MediaPipe Object Detection setup
+BaseOptions = mp.tasks.BaseOptions
+ObjectDetector = mp.tasks.vision.ObjectDetector
+ObjectDetectorOptions = mp.tasks.vision.ObjectDetectorOptions
+VisionRunningMode = mp.tasks.vision.RunningMode
+
+options = ObjectDetectorOptions(
+    base_options=BaseOptions(model_asset_path=model_path),
+    max_results=5,
+    running_mode=VisionRunningMode.VIDEO,
+    score_threshold=0.5
+)
+
+# Video capture setup
+cap = cv2.VideoCapture(0)
+ws, hs = 1280, 720  # Set the width and height of the video feed
+cap.set(cv2.CAP_PROP_FRAME_WIDTH, ws)
+cap.set(cv2.CAP_PROP_FRAME_HEIGHT, hs)
+
+with ObjectDetector.create_from_options(options) as detector:
+    while cap.isOpened():
+        success, img = cap.read()
+        if not success:
+            print("Error: Failed to grab frame from video stream.")
+            break
+
+        img = cv2.flip(img, 1)  # Flip the image horizontally for a mirror effect
+        img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+        results = hands.process(img_rgb)
+        img = cv2.cvtColor(img_rgb, cv2.COLOR_RGB2BGR)
+
+        multi_hand_landmarks = results.multi_hand_landmarks
+
+        if multi_hand_landmarks and len(multi_hand_landmarks) > 0:
+            lm_list = []
+            for id, lm in enumerate(multi_hand_landmarks[0].landmark):
+                if id == 8:  # Index finger tip
+                    lm_x8, lm_y8 = int(lm.x * ws), int(lm.y * hs)
+                    lm_list.append([lm_x8, lm_y8])
+                elif id == 7:  # Middle finger tip
+                    lm_x7, lm_y7 = int(lm.x * ws), int(lm.y * hs)
+                    lm_list.append([lm_x7, lm_y7])
+
+            if len(lm_list) == 2:
+                lm_x7, lm_y7 = lm_list[0]
+                lm_x8, lm_y8 = lm_list[1]
+
+                # Extend the line between the two fingertips
+                x1_ext, y1_ext, x2_ext, y2_ext = extend_line(lm_x7, lm_y7, lm_x8, lm_y8, length=100)
+
+                # Define crop region around the extended line endpoint
+                crop_size = 224
+                x1_crop = max(x2_ext - crop_size // 2, 0)
+                y1_crop = max(y2_ext - crop_size // 2, 0)
+                x2_crop = min(x2_ext + crop_size // 2, ws)
+                y2_crop = min(y2_ext + crop_size // 2, hs)
+
+                if x2_crop > x1_crop and y2_crop > y1_crop:
+                    cropped_img = img[y1_crop:y2_crop, x1_crop:x2_crop]
+                    cropped_img_resized = cv2.resize(cropped_img, (224, 224))
+
+                    # Prepare for object detection
+                    rgb_cropped = cv2.cvtColor(cropped_img_resized, cv2.COLOR_BGR2RGB)
+                    mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=np.array(rgb_cropped))
+
+                    # Perform detection
+                    timestamp = cv2.getTickCount() / cv2.getTickFrequency()  # Get timestamp for video frame
+                    detection_result = detector.detect_for_video(mp_image, timestamp)
+
+                    # Visualize results on the cropped image
+                    annotated_img = visualize(cropped_img_resized, detection_result)
+
+                    # Show the cropped and annotated image in a separate window
+                    cv2.imshow("Cropped Detection", annotated_img)
+
+        # Display the live video feed with hand tracking visualization (if needed)
+        cv2.imshow("Image", img)
+
+        if cv2.waitKey(1) & 0xFF == ord('q'):
+            break
+
+cap.release()
+cv2.destroyAllWindows()
